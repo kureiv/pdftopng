@@ -7,7 +7,7 @@ Tkinter: Python 내장 라이브러리
 
 
 사용 방법 : 
-1. pdf2png.zip 을 다운받는다.
+1. dist.z01, dist.zip 을 다운받는다. (분할압축 되어있다.)
 2. 압축을 푼다.
 3. pdf2png를 실행한다.
 4. 파일선택 버튼을 눌러 pdf파일을 선택한다.
