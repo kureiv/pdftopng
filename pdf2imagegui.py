@@ -6,23 +6,19 @@ import os
 import sys
 import time
 import threading
+import multiprocessing
 import webbrowser
+import gc
 
-# 중복 실행 방지 플래그
 is_running = False
-
-# 타이머 종료 플래그
 stop_timer = False  
 
-# 카카오톡 오픈 채팅 링크
 kakao_chat_url = "https://open.kakao.com/o/s1o5t4Wg"
 
-# 이미지 클릭 시 오픈채팅 링크 열기
 def open_kakao_chat(event):
     webbrowser.open(kakao_chat_url)
 
 def get_unique_folder(base_path):
-    """ 같은 폴더명이 있으면 숫자를 붙여 고유한 폴더명 생성 """
     folder_path = base_path
     counter = 1
     while os.path.exists(folder_path):
@@ -30,72 +26,75 @@ def get_unique_folder(base_path):
         counter += 1
     return folder_path
 
-# PDF를 PNG로 변환하는 함수
+def convert_pages(args):
+    pdf_path, start, end, target_folder, base_name = args
+    images = convert_from_path(pdf_path, dpi=300, first_page=start, last_page=end, thread_count=1)
+    
+    for i, image in enumerate(images, start=start):
+        output_path = os.path.join(target_folder, f"{base_name}_{i}.png")
+        image.save(output_path, 'PNG')
+        del image
+        gc.collect()
+
 def convert_pdf_to_png(pdf_path, progress_var, progress_label, pdf_button, start_button):
     global is_running, stop_timer
     if is_running:
-        return  # 중복 실행 방지
+        return
 
-    stop_timer = False # 변환 시작 시 타이머 동작
-    is_running = True  # 변환 시작 시 플래그 설정
-    pdf_button.config(state=tk.DISABLED) # 변환 시작하면 파일 선택택 버튼 비활성화
-    start_button.config(state=tk.DISABLED)  # 변환 시작 버튼 비활성화
+    stop_timer = False
+    is_running = True
+    pdf_button.config(state=tk.DISABLED)
+    start_button.config(state=tk.DISABLED)
     progress_label.config(text="PDF 분석 중...")
-    progress_var.set(5)  # 초기 진행률 설정
+    progress_var.set(5)
 
     try:
-        start_time = time.time() # 시작 시간 기록
-        update_title(start_time) # 경과시간 업데이트 시작
-
-        # PDF를 이미지로 변환
-        images = convert_from_path(pdf_path, dpi=300)
-        total_pages = len(images)
+        start_time = time.time()
+        update_title(start_time)
 
         base_name = os.path.splitext(os.path.basename(pdf_path))[0]
         pdf_folder = os.path.dirname(pdf_path)
-
         target_folder = get_unique_folder(os.path.join(pdf_folder, base_name))
+        os.makedirs(target_folder, exist_ok=True)
 
-        if not os.path.exists(target_folder):
-            os.makedirs(target_folder)
+        total_pages = len(convert_from_path(pdf_path, dpi=50)) # 페이지 변환할 땐 고해상도가 필요없어서 50으로함함
+        
+        num_processes = max(1, multiprocessing.cpu_count() // 2)
+        page_chunk = 2
+        page_ranges = [(pdf_path, i + 1, min(i + page_chunk, total_pages), target_folder, base_name) 
+                       for i in range(0, total_pages, page_chunk)]
+        
+        with multiprocessing.Pool(processes=num_processes) as pool:
+            pool.map(convert_pages, page_ranges)
 
-        for i, image in enumerate(images):
-            progress_label.config(text=f"변환 진행 중... ({i + 1}/{total_pages} 페이지)")
-            output_path = os.path.join(target_folder, f"{base_name}_{i + 1}.png")
-            image.save(output_path, 'PNG')
-
-            progress = int(((i + 1) / total_pages) * 95) + 5
-            progress_var.set(progress)
-
-        end_time = time.time() # 종료 시간 기록
-        elapsed_time = end_time - start_time # 소요 시간 계산
+        end_time = time.time()
+        elapsed_time = end_time - start_time
 
         progress_label.config(text="변환 완료!")
+        print(f"소요시간 : {elapsed_time}")
         messagebox.showinfo("완료", f"PDF 변환 완료! PNG 파일이 {target_folder}에 저장되었습니다.\n소요 시간: {elapsed_time:.2f}초")
     except Exception as e:
         progress_label.config(text="오류 발생!")
         messagebox.showerror("오류", f"변환 중 오류가 발생했습니다: {str(e)}")
-        stop_timer = True # 오류 발생 시 타이머 종료
+        stop_timer = True
     finally:
         is_running = False
-        stop_timer = True  # 변환 완료 후 타이머 종료
+        stop_timer = True
         start_button.config(state=tk.NORMAL)
         pdf_button.config(state=tk.NORMAL)
-        progress_var.set(0)  # 프로그레스 바 초기화
-        root.title("PDF to PNG 변환기")  # 변환이 끝나면 기본 제목으로 복원
+        progress_var.set(0)
+        root.after(0, lambda: root.title("PDF to PNG 변환기"))
 
-# 변환 진행 중 경과 시간을 업데이트하는 함수
 def update_title(start_time):
     def update():
-        global stop_timer  # 전역 변수 사용
+        global stop_timer
         while not stop_timer:
             elapsed_time = time.time() - start_time
-            root.title(f"PDF to PNG 변환기 - 경과 시간: {elapsed_time:.1f}초")
-            time.sleep(1)  # 1초마다 업데이트
-        
-    threading.Thread(target=update, daemon=True).start()  # 백그라운드 쓰레드 실행
+            root.after(0, lambda: root.title(f"PDF to PNG 변환기 - 경과 시간: {elapsed_time:.1f}초"))
+            time.sleep(1)
+    
+    threading.Thread(target=update, daemon=True).start()
 
-# PDF 파일 선택하는 함수
 def select_pdf_file():
     file_path = filedialog.askopenfilename(title="PDF 파일을 선택하세요", filetypes=[("PDF Files", "*.pdf")])
     if file_path:
@@ -104,11 +103,10 @@ def select_pdf_file():
     else:
         messagebox.showwarning("경고", "파일을 선택하지 않았습니다.")
 
-# 변환 시작 (스레드 사용)
 def start_conversion():
     global is_running
     if is_running:
-        return  # 중복 실행 방지
+        return
 
     pdf_path = pdf_entry.get()
     if not pdf_path:
@@ -140,41 +138,34 @@ def add_promo_image():
     # 클릭 이벤트 연결
     label.bind("<Button-1>", open_kakao_chat)  # 마우스 왼쪽 클릭 시 open_kakao_chat 함수 실행
 
-# GUI 설정
-root = tk.Tk()
-root.title("PDF to PNG 변환기")
-root.geometry("362x350")
+if __name__ == "__main__":
+    root = tk.Tk()
+    root.title("PDF to PNG 변환기")
+    root.geometry("362x350")
 
+    pdf_label = tk.Label(root, text="PDF 파일 선택:")
+    pdf_label.grid(row=0, column=0, columnspan=2, pady=10)
 
-# 레이블
-pdf_label = tk.Label(root, text="PDF 파일 선택:")
-pdf_label.grid(row=0, column=0, columnspan=2, pady=10)
+    file_frame = tk.Frame(root)
+    file_frame.grid(row=1, column=0, columnspan=2, pady=5, padx=5)
 
+    pdf_entry = tk.Entry(file_frame, width=40)
+    pdf_entry.grid(row=0, column=0, padx=(0, 5))
 
-# 프레임을 사용하여 입력 필드와 버튼을 한 줄에 정렬
-file_frame = tk.Frame(root)
-file_frame.grid(row=1, column=0, columnspan=2, pady=5, padx=5)
+    pdf_button = tk.Button(file_frame, text="파일 선택", command=select_pdf_file, background="tomato")
+    pdf_button.grid(row=0, column=1)
 
-pdf_entry = tk.Entry(file_frame, width=40)
-pdf_entry.grid(row=0, column=0, padx=(0, 5))  # 오른쪽 여백 추가
+    progress_label = tk.Label(root, text="대기 중...", font=("Arial", 10))
+    progress_label.grid(row=3, column=0,columnspan=2, pady=5)
 
-pdf_button = tk.Button(file_frame, text="파일 선택", command=select_pdf_file, background="tomato")
-pdf_button.grid(row=0, column=1)
+    progress_var = tk.IntVar()
+    progress_bar = ttk.Progressbar(root, variable=progress_var, maximum=100, length=300)
+    progress_bar.grid(row=4, column=0, columnspan=2, pady=10)
 
-# 진행 상태 레이블
-progress_label = tk.Label(root, text="대기 중...", font=("Arial", 10))
-progress_label.grid(row=3, column=0,columnspan=2, pady=5)
+    start_button = tk.Button(root, text="변환 시작", command=start_conversion, background="steel blue")
+    start_button.grid(row=2, column=0, columnspan=2, pady=20)
 
-# 프로그레스 바
-progress_var = tk.IntVar()
-progress_bar = ttk.Progressbar(root, variable=progress_var, maximum=100, length=300)
-progress_bar.grid(row=4, column=0, columnspan=2, pady=10)
+    # 홍보 이미지 추가
+    add_promo_image()
 
-# 변환 시작 버튼
-start_button = tk.Button(root, text="변환 시작", command=start_conversion, background="steel blue")
-start_button.grid(row=2, column=0, columnspan=2, pady=20)
-
-# 홍보 이미지 추가
-add_promo_image()
-
-root.mainloop()
+    root.mainloop()
